@@ -1,0 +1,57 @@
+# Config for matbench_phonons — predicts last phonon DOS peak (cm^-1)
+#
+# Two usage modes (set via --mode in matbench_run.py):
+#
+#   scalar_regression (default):
+#       dos_num: 1  →  model directly predicts a single float.
+#       Train from scratch on each MatBench fold (5-fold CV).
+#
+#   dos_inference:
+#       dos_num: 64  →  load a pre-trained DOS model, predict DOS curves,
+#       then extract the peak frequency with find_last_peak().
+#       Requires --checkpoint and --max_phonon_freq.
+
+model:
+  type: "transformer"
+  params:
+    sub_model:
+      transformer:
+        token_num: 118
+        d_model: 256
+        nhead: 8
+        dos_num: 1          # 1 = scalar regression; 64 = full DOS prediction
+        num_encoder_layers: 4
+        num_decoder_layers: 2
+        dim_feedforward: 1024
+        dropout: 0.1
+        activation: "gelu"
+
+    save_best: "MSE"
+    metrics_list: ["MAE", "MSE"]
+
+    optimizer:
+      transformer:
+        type: "AdamW"
+        params:
+          lr: 1.0e-4
+          betas: [0.9, 0.99]
+          weight_decay: 1.0e-2
+
+    lr_scheduler:
+      transformer:
+        sched: cosine
+        epochs: &maxepoch 50
+        min_lr: 1.0e-6
+        warmup_lr: 1.0e-5
+        warmup_epochs: 5
+        lr_noise:
+        cooldown_epochs: 0
+
+dataloader:
+  num_workers: 2
+  pin_memory: True
+
+trainer:
+  batch_size: 64
+  test_batch_size: 128
+  max_epoch: *maxepoch

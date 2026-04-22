@@ -261,3 +261,93 @@ class basemodel(nn.Module):
             [f'Epoch [{epoch + 1}](val stats)', "{meters}"]).format(meters=str(metric_logger)))
 
         return metric_logger
+
+    # ------------------------------------------------------------------
+    # MatBench interface — scalar regression mode (dos_num=1) or
+    # DOS-based inference (dos_num>1, peak extraction done externally).
+    # Batch format: (elements [B,L], positions [B,L,3], target [B])
+    # ------------------------------------------------------------------
+
+    def _forward(self, elements, positions):
+        """Run forward pass; always returns [B, dos_num]."""
+        mask      = (elements == 0).to(self.device)
+        elements  = elements.to(self.device)
+        positions = positions.to(self.device)
+        key = list(self.model.keys())[0]
+        output, _ = self.model[key](elements, mask, positions)
+        return output   # [B, dos_num]
+
+    def matbench_train_one_epoch(self, train_loader, epoch, max_epoches):
+        """One training epoch on (elements, positions, scalar_target) batches."""
+        for key in self.lr_scheduler:
+            if not self.lr_scheduler_by_step[key]:
+                self.lr_scheduler[key].step(epoch)
+
+        key = list(self.model.keys())[0]
+        self.model[key].train()
+
+        metric_logger = utils.MetricLogger(delimiter="  ")
+        iter_time = utils.SmoothedValue(fmt='{avg:.3f}')
+        data_time = utils.SmoothedValue(fmt='{avg:.3f}')
+        max_step  = len(train_loader)
+        end_time  = time.time()
+
+        for step, (elements, positions, target) in enumerate(train_loader):
+            for k in self.lr_scheduler:
+                if self.lr_scheduler_by_step[k]:
+                    self.lr_scheduler[k].step(epoch * max_step + step)
+
+            data_time.update(time.time() - end_time)
+
+            target  = target.to(self.device).float()          # [B]
+            predict = self._forward(elements, positions).squeeze(-1)  # [B,1]→[B]
+            loss    = torch.mean((predict - target) ** 2)
+
+            self.optimizer[key].zero_grad()
+            loss.backward()
+            self.optimizer[key].step()
+
+            metric_logger.update(loss=loss.item())
+            iter_time.update(time.time() - end_time)
+            end_time = time.time()
+
+            if (step + 1) % 50 == 0 or step + 1 == max_step:
+                eta_seconds = iter_time.global_avg * (max_step - step - 1 + max_step * (max_epoches - epoch - 1))
+                eta_string  = str(datetime.timedelta(seconds=int(eta_seconds)))
+                self.logger.info(
+                    f"[MatBench] Epoch [{epoch+1}/{max_epoches}][{step+1}/{max_step}]"
+                    f"  lr: {self.optimizer[key].param_groups[0]['lr']:.2e}"
+                    f"  eta: {eta_string}"
+                    f"  {metric_logger}"
+                )
+
+    def matbench_trainer(self, train_loader, max_epoches, checkpoint_savedir=None):
+        """Full training loop for one MatBench fold."""
+        for epoch in range(max_epoches):
+            self.matbench_train_one_epoch(train_loader, epoch, max_epoches)
+        if checkpoint_savedir is not None:
+            self.save_checkpoint(max_epoches - 1, checkpoint_savedir, save_type='save_latest')
+
+    @torch.no_grad()
+    def matbench_predict(self, data_loader):
+        """
+        Run inference on a MatbenchDataset DataLoader.
+
+        Returns:
+            np.ndarray [N]        when dos_num == 1  (scalar regression)
+            np.ndarray [N, dos_num] when dos_num  > 1  (DOS prediction)
+        """
+        key = list(self.model.keys())[0]
+        self.model[key].eval()
+        all_preds = []
+
+        for batch in data_loader:
+            # batch is (elements, positions) or (elements, positions, target)
+            elements, positions = batch[0], batch[1]
+            output = self._forward(elements, positions)   # [B, dos_num]
+            all_preds.append(output.cpu().numpy())
+
+        preds = np.concatenate(all_preds, axis=0)   # [N, dos_num]
+        if preds.shape[1] == 1:
+            preds = preds.squeeze(1)                 # [N]  for scalar mode
+        return preds
