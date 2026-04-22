@@ -25,7 +25,9 @@ Results are saved to <outdir>/results.json.gz
 
 import argparse
 import glob
+import gzip
 import os
+import shutil
 import yaml
 import numpy as np
 import pandas as pd
@@ -56,10 +58,7 @@ def _matminer_cache_dir() -> str:
 
 
 def clear_matminer_cache(dataset_name: str) -> list:
-    """
-    Delete all cached matminer files whose name starts with `dataset_name`.
-    Returns the list of deleted paths.
-    """
+    """Delete all cached matminer files whose name starts with `dataset_name`."""
     cache_dir = _matminer_cache_dir()
     removed = []
     for path in glob.glob(os.path.join(cache_dir, f"{dataset_name}*")):
@@ -68,38 +67,81 @@ def clear_matminer_cache(dataset_name: str) -> list:
     return removed
 
 
+def _is_gzip(path: str) -> bool:
+    """Return True if the file starts with gzip magic bytes 0x1f 0x8b."""
+    with open(path, "rb") as f:
+        return f.read(2) == b"\x1f\x8b"
+
+
+def _compress_plain_json_in_cache(dataset_name: str, logger) -> list:
+    """
+    Some matminer versions download plain-JSON content but name the file .json.gz.
+    Gzip-compress such files in-place so matminer can read them.
+    Returns list of fixed paths.
+    """
+    cache_dir = _matminer_cache_dir()
+    fixed = []
+    for path in glob.glob(os.path.join(cache_dir, f"{dataset_name}*.json.gz")):
+        if not _is_gzip(path):
+            logger.info(f"  Plain JSON detected, compressing in-place: {path}")
+            tmp = path + ".tmp_gz"
+            with open(path, "rb") as src, gzip.open(tmp, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            os.replace(tmp, path)
+            fixed.append(path)
+    return fixed
+
+
 def load_task(task, logger, force_redownload: bool = False):
     """
-    Load a MatBench task, automatically retrying after clearing a corrupted cache.
+    Load a MatBench task with automatic recovery from two common cache errors:
 
-    matminer raises ``UserWarning`` (not a standard exception subclass of Exception
-    but of Warning → Exception) when the downloaded file's hash doesn't match.
-    We catch it, wipe the cache for this dataset, and try once more.
+    1. Hash mismatch (``UserWarning`` from matminer):
+       Corrupted or stale download → delete cache, re-download.
+
+    2. ``gzip.BadGzipFile`` — file is plain JSON, not gzip-compressed:
+       Happens when the download server returns uncompressed content with a
+       .json.gz filename.  We gzip-compress the file in-place and retry.
+
+    Both scenarios are retried automatically (up to 3 attempts total).
     """
     if force_redownload:
-        removed = clear_matminer_cache(task.dataset_name)
-        for f in removed:
+        for f in clear_matminer_cache(task.dataset_name):
             logger.info(f"Cache cleared: {f}")
 
-    try:
-        task.load()
-    except (UserWarning, Exception) as exc:
-        msg = str(exc)
-        if "hash" in msg.lower() or "corrupt" in msg.lower():
-            logger.warning(f"Dataset cache validation failed: {exc}")
-            logger.info("Clearing matminer cache and re-downloading …")
-            removed = clear_matminer_cache(task.dataset_name)
-            if removed:
+    for attempt in range(1, 4):
+        try:
+            task.load()
+            return
+        except Exception as exc:
+            msg = str(exc)
+            is_last = attempt == 3
+
+            if ("hash" in msg.lower() or "corrupt" in msg.lower()) and not is_last:
+                logger.warning(f"[attempt {attempt}] Cache hash/corruption error: {exc}")
+                logger.info("Clearing cache and re-downloading …")
+                removed = clear_matminer_cache(task.dataset_name)
                 for f in removed:
                     logger.info(f"  Deleted: {f}")
+                if not removed:
+                    logger.warning("No cached files found; a fresh download will be attempted.")
+
+            elif ("gzip" in msg.lower() or "BadGzip" in type(exc).__name__) and not is_last:
+                logger.warning(f"[attempt {attempt}] Cache file is not gzip-compressed: {exc}")
+                fixed = _compress_plain_json_in_cache(task.dataset_name, logger)
+                if not fixed:
+                    logger.warning(
+                        "No plain-JSON files found to fix. "
+                        "Clearing cache and re-downloading as fallback …"
+                    )
+                    for f in clear_matminer_cache(task.dataset_name):
+                        logger.info(f"  Deleted: {f}")
+
             else:
-                logger.warning(
-                    f"No cached files found in {_matminer_cache_dir()}. "
-                    "The dataset will be downloaded fresh."
-                )
-            task.load()   # second attempt — will re-download
-        else:
-            raise
+                raise RuntimeError(
+                    f"Failed to load task '{task.dataset_name}' after {attempt} attempt(s).\n"
+                    f"Original error: {exc}"
+                ) from exc
 
 
 # ---------------------------------------------------------------------------
