@@ -24,6 +24,7 @@ Results are saved to <outdir>/results.json.gz
 """
 
 import argparse
+import glob
 import os
 import yaml
 import numpy as np
@@ -40,6 +41,65 @@ import utils.misc as utils
 
 
 TASK_NAME = "matbench_phonons"
+
+
+# ---------------------------------------------------------------------------
+# Dataset cache helpers
+# ---------------------------------------------------------------------------
+
+def _matminer_cache_dir() -> str:
+    """Return matminer's dataset cache directory (respects MATMINER_DATA env var)."""
+    return os.environ.get(
+        "MATMINER_DATA",
+        os.path.join(os.path.expanduser("~"), ".matminer", "datasets"),
+    )
+
+
+def clear_matminer_cache(dataset_name: str) -> list:
+    """
+    Delete all cached matminer files whose name starts with `dataset_name`.
+    Returns the list of deleted paths.
+    """
+    cache_dir = _matminer_cache_dir()
+    removed = []
+    for path in glob.glob(os.path.join(cache_dir, f"{dataset_name}*")):
+        os.remove(path)
+        removed.append(path)
+    return removed
+
+
+def load_task(task, logger, force_redownload: bool = False):
+    """
+    Load a MatBench task, automatically retrying after clearing a corrupted cache.
+
+    matminer raises ``UserWarning`` (not a standard exception subclass of Exception
+    but of Warning → Exception) when the downloaded file's hash doesn't match.
+    We catch it, wipe the cache for this dataset, and try once more.
+    """
+    if force_redownload:
+        removed = clear_matminer_cache(task.dataset_name)
+        for f in removed:
+            logger.info(f"Cache cleared: {f}")
+
+    try:
+        task.load()
+    except (UserWarning, Exception) as exc:
+        msg = str(exc)
+        if "hash" in msg.lower() or "corrupt" in msg.lower():
+            logger.warning(f"Dataset cache validation failed: {exc}")
+            logger.info("Clearing matminer cache and re-downloading …")
+            removed = clear_matminer_cache(task.dataset_name)
+            if removed:
+                for f in removed:
+                    logger.info(f"  Deleted: {f}")
+            else:
+                logger.warning(
+                    f"No cached files found in {_matminer_cache_dir()}. "
+                    "The dataset will be downloaded fresh."
+                )
+            task.load()   # second attempt — will re-download
+        else:
+            raise
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +224,7 @@ def main(args):
 
     mb = MatbenchBenchmark(autoload=False, subset=[TASK_NAME])
     task = getattr(mb, TASK_NAME)
-    task.load()
+    load_task(task, logger, force_redownload=args.clear_cache)
     logger.info(f"Task '{TASK_NAME}' loaded: {task.metadata['n_samples']} samples, "
                 f"{len(task.folds)} folds.")
 
@@ -221,6 +281,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max_phonon_freq", type=float, default=1200.0,
         help="Upper bound of phonon frequency grid in cm^-1 (dos_inference mode only).",
+    )
+    parser.add_argument(
+        "--clear_cache", action="store_true",
+        help="Force delete cached matminer dataset files before loading (fixes hash mismatch errors).",
     )
     args = parser.parse_args()
 
