@@ -6,7 +6,6 @@ import utils.misc as utils
 import yaml
 from utils.logger import get_logger
 import copy
-from utils.metrics import MetricsRecorder
 
 
 #----------------------------------------------------------------------------
@@ -118,8 +117,3 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     main(args)
-
-
-
-
-    # metric list从args中获取，获取meanstd并传到valid中，额外参数怎么设置, 完善metric,是否使用常量数据的操作

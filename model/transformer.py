@@ -15,8 +15,6 @@ import torch.nn.functional as F
 from torch import nn, Tensor
 from utils.atom_feature import AtomFeatureEncoder
 from utils.relative_features import compute_relative_features
-from utils.rbf_encoding import RBFEncoding
-from e3nn.o3 import spherical_harmonics 
 from utils.rp_encoding import RPEncoding
 
 class CNN(nn.Module):
@@ -200,34 +198,26 @@ class TransformerDecoder(nn.Module):
 
 
 class TransformerEncoderLayer(nn.Module):
-    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, activation="leaky_relu", normalize_before=False, rbf_encoder=None):
+    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, activation="leaky_relu", normalize_before=False):
         super().__init__()
         self.activation = _get_activation_fn(activation)
         self.dim = d_model
         self.nhead = nhead
-        
-        # 标准多头自注意力
+
         self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
-        
-        # 用于前馈网络
+
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         self.dropout = nn.Dropout(dropout)
         self.linear2 = nn.Linear(dim_feedforward, d_model)
-        
+
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
         self.normalize_before = normalize_before
-        
-        self.rbf_encoder = RBFEncoding(num_centers=64, cutoff=10.0)
-        self.rel_proj = nn.Linear(self.rbf_encoder.num_centers, d_model)  
-        self.max_ell = 3  # 球谐函数最大阶数，自己调整
-        dim_sph = sum([2 * l + 1 for l in range(self.max_ell + 1)])  # 球谐展开维度
-        self.dir_proj = nn.Linear(dim_sph, d_model)
 
         self.rp_encoder = RPEncoding(num_radial=64, lmax=3, cutoff=10.0)
-        self.rp_proj = nn.Linear(self.rp_encoder.out_dim, d_model)  
+        self.rp_proj = nn.Linear(self.rp_encoder.out_dim, d_model)
         
     def forward(self, src, src_mask: Optional[torch.Tensor] = None,
                      src_key_padding_mask: Optional[torch.Tensor] = None,
@@ -236,36 +226,26 @@ class TransformerEncoderLayer(nn.Module):
                      rel_dirs=None):
 
         B, L, _ = src.size()
-        
         q, k, v = src, src, src
-        
-        attn_output, attn_weights = self.self_attn(q, k, v, attn_mask=src_mask, key_padding_mask=src_key_padding_mask)
-        
+        d_model_head = self.dim // self.nhead
+
+        # Geometry-biased attention scores
         rp_emb = self.rp_encoder(rel_diss, rel_dirs)
         rp_emb = self.rp_proj(rp_emb)  # [B, L, L, d_model]
-        d_model_head = self.dim // self.nhead
         rp_emb = rp_emb.view(B, L, L, self.nhead, d_model_head)
         q_heads = q.view(B, L, self.nhead, d_model_head)
         rp_scores = (q_heads.unsqueeze(2) * rp_emb).sum(-1)
         rp_scores = rp_scores.permute(0, 3, 1, 2).reshape(B * self.nhead, L, L)
-        
+
         q_scaled = q / (d_model_head ** 0.5)
         q_heads2 = q_scaled.view(B, L, self.nhead, d_model_head).permute(0, 2, 1, 3).reshape(B * self.nhead, L, d_model_head)
         k_heads = k.view(B, L, self.nhead, d_model_head).permute(0, 2, 1, 3).reshape(B * self.nhead, L, d_model_head)
         base_scores = torch.bmm(q_heads2, k_heads.transpose(1, 2))
-        
-        # 新的总打分
-        total_scores = base_scores + rp_scores
-        # 计算新的注意力权重并输出
-        attn_weights_new = F.softmax(total_scores, dim=-1)
-        
-        # 重新计算注意力输出：将新的权重作用于 v（同样需要拆分成头）
+
+        attn_weights = F.softmax(base_scores + rp_scores, dim=-1)
         v_heads = v.view(B, L, self.nhead, d_model_head).permute(0, 2, 1, 3).reshape(B * self.nhead, L, d_model_head)
-        attn_output_new = torch.bmm(attn_weights_new, v_heads)
-        attn_output_new = attn_output_new.view(B, self.nhead, L, d_model_head).permute(0, 2, 1, 3).reshape(B, L, self.dim)
-        
-        # 使用新的注意力输出
-        src2 = attn_output_new
+        attn_out = torch.bmm(attn_weights, v_heads)
+        src2 = attn_out.view(B, self.nhead, L, d_model_head).permute(0, 2, 1, 3).reshape(B, L, self.dim)
 
         src = src + self.dropout1(src2)
         src = self.norm1(src)
