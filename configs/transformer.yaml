@@ -1,0 +1,62 @@
+model:
+  type: "transformer"
+  params:
+    sub_model:
+      transformer:
+        token_num: 118
+        d_model: 512
+        nhead: 8
+        dos_num: 64
+        num_encoder_layers: 6
+        num_decoder_layers: 6
+        dim_feedforward: 2048
+        dropout: 0.1
+        activation: "gelu" # relu, relu_inplace, gelu, glu, leaky_relu
+
+    save_best: "MSE"
+    metrics_list: ["MAE", "MSE"]
+
+    optimizer:
+      transformer:
+        type: "AdamW" # SGD, ASGD, Adagrad, Adamax, Adadelta, Adam, AdamW, RMSprop
+        params:
+          lr: 1.0e-4
+          betas: [0.9, 0.99]
+      
+    
+    lr_scheduler:
+      transformer:
+        sched: cosine
+        epochs: &maxepoch 100
+        min_lr: 1.0e-6
+        warmup_lr: 1.0e-5
+        warmup_epochs: 5
+        lr_noise: 
+        cooldown_epochs: 0
+
+
+
+dataset:
+  train:
+    data_dir: "./data/train4ARPAT"
+
+  test:
+    data_dir: "./data/train4ARPAT"
+
+  valid:
+    data_dir: "./data/train4ARPAT"
+  smear: 0
+
+
+
+dataloader:
+  num_workers: 1
+  pin_memory: True
+  prefetch_factor: 10
+  persistent_workers: True
+
+trainer:
+  batch_size: 32
+  test_batch_size: 32
+  valid_batch_size: 32
+  max_epoch: *maxepoch
