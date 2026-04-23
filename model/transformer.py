@@ -80,11 +80,18 @@ class Transformer(nn.Module):
 
         self.query_embed = nn.Parameter(torch.zeros(dos_num, d_model))
         self.tgt = nn.Parameter(torch.zeros(dos_num, d_model))
-        self.out_embed = CNN(d_model, d_model*3, output_dim=1, num_layers=6)
-        self.sigmoid = nn.Sigmoid()
+        # dos_num=1: single linear projection (no CNN needed for scalar output)
+        # dos_num>1: CNN across the DOS sequence
+        if dos_num == 1:
+            self.scalar_head = nn.Linear(d_model, 1)
+            self.out_embed = None
+        else:
+            self.scalar_head = None
+            self.out_embed = CNN(d_model, d_model*3, output_dim=1, num_layers=6)
         self._reset_parameters()
         self.d_model = d_model
         self.nhead = nhead
+        self.dos_num = dos_num
         
     def _reset_parameters(self):
         for p in self.parameters():
@@ -133,11 +140,14 @@ class Transformer(nn.Module):
             query_pos=query_embed
         )
 
-        # Output
-        hs = hs.permute(0, 2, 1)
-        output = self.out_embed(hs)
-        output = output.permute(0, 2, 1)
-        res = output.squeeze(-1) # 变成 [B, dos_num]
+        # Output head
+        if self.scalar_head is not None:
+            res = self.scalar_head(hs).squeeze(-1)  # [B, 1, d_model] -> [B, 1]
+        else:
+            hs = hs.permute(0, 2, 1)                # [B, d_model, dos_num]
+            output = self.out_embed(hs)              # [B, 1, dos_num]
+            output = output.permute(0, 2, 1)        # [B, dos_num, 1]
+            res = output.squeeze(-1)                 # [B, dos_num]
         return res, attn
 
 class TransformerEncoder(nn.Module):

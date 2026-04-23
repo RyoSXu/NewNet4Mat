@@ -193,7 +193,13 @@ def run_scalar_regression(task, builder, cfg, outdir, logger):
         train_inputs, train_outputs = task.get_train_and_val_data(fold)
         test_inputs = task.get_test_data(fold, include_target=False)
 
-        train_ds = MatbenchDataset(list(train_inputs), targets=train_outputs)
+        # Z-score normalise targets per fold so MSE loss is on unit scale
+        target_mean = float(train_outputs.mean())
+        target_std  = float(train_outputs.std())
+        train_outputs_norm = (train_outputs - target_mean) / target_std
+        logger.info(f"Fold {fold} target stats: mean={target_mean:.2f}, std={target_std:.2f}")
+
+        train_ds = MatbenchDataset(list(train_inputs), targets=train_outputs_norm)
         test_ds  = MatbenchDataset(list(test_inputs))
 
         train_loader = _make_loader(train_ds, batch_size, shuffle=True,  num_workers=num_workers)
@@ -203,7 +209,8 @@ def run_scalar_regression(task, builder, cfg, outdir, logger):
         logger.info(f"Training fold {fold} for {max_epoch} epochs …")
         model.matbench_trainer(train_loader, max_epoch, checkpoint_savedir=fold_dir)
 
-        preds = model.matbench_predict(test_loader)   # np.ndarray [N]
+        preds = model.matbench_predict(test_loader)   # np.ndarray [N], normalised scale
+        preds = preds * target_std + target_mean       # de-normalise back to cm^-1
         predictions = pd.Series(preds.tolist(), index=test_inputs.index)
 
         task.record(fold, predictions)
