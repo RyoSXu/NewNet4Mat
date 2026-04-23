@@ -10,7 +10,7 @@ Elements encoding (1-D array, length PAD_LEN = max_atoms + 2):
 Positions encoding (2-D array, shape [PAD_LEN, 3]):
     row 0      : (a, b, c) lattice lengths in Angstrom
     row 1      : (alpha, beta, gamma) angles in degrees
-    row 2..n+1 : fractional coordinates of each atom (absolute value)
+    row 2..n+1 : fractional coordinates of each atom (wrapped to [0, 1))
     remaining  : zeros
 """
 
@@ -48,7 +48,7 @@ def structure_to_arrays(
 
     # Atom rows
     elements[2:2 + n]  = structure.atomic_numbers[:n]
-    positions[2:2 + n] = np.abs(structure.frac_coords[:n])
+    positions[2:2 + n] = np.mod(structure.frac_coords[:n], 1.0)
 
     return elements, positions
 

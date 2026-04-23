@@ -92,13 +92,14 @@ class Transformer(nn.Module):
                 nn.init.xavier_normal_(p)
 
     def forward(self, src, mask, pos):
-        # src: [B, L] atom indices; pos carries lattice+coords
-        B, Lp, _ = pos.shape
-        atom_len = Lp - 2
-        mask = mask[:, :atom_len]
+        # src: [B, L_total] with two lattice tokens followed by atom tokens/padding
+        B, _, _ = pos.shape
+
+        atom_idx = src[:, 2:]                    # [B, L]
+        mask = atom_idx == 0                     # [B, L]
+        atom_len = atom_idx.shape[1]
 
         # Extract atom indices and numeric features
-        atom_idx = src[:, 2:]  # [B, L]
         atom_emb = self.tok_emb(atom_idx)         # [B, L, d_model]
         num_emb  = self.num_emb_encoder(atom_idx) # [B, L, d_model]
 

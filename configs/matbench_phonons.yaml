@@ -16,7 +16,7 @@ model:
   params:
     sub_model:
       transformer:
-        token_num: 118
+        token_num: 128
         d_model: 256
         nhead: 8
         dos_num: 1          # 1 = scalar regression; 64 = full DOS prediction

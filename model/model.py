@@ -270,9 +270,9 @@ class basemodel(nn.Module):
 
     def _forward(self, elements, positions):
         """Run forward pass; always returns [B, dos_num]."""
-        mask      = (elements == 0).to(self.device)
         elements  = elements.to(self.device)
         positions = positions.to(self.device)
+        mask      = (elements[:, 2:] == 0).to(self.device)
         key = list(self.model.keys())[0]
         output, _ = self.model[key](elements, mask, positions)
         return output   # [B, dos_num]
