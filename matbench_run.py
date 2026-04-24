@@ -32,7 +32,7 @@ import yaml
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 from matbench.bench import MatbenchBenchmark
 
 from utils.structure_utils import find_last_peak, MAX_ATOMS
@@ -199,15 +199,25 @@ def run_scalar_regression(task, builder, cfg, outdir, logger):
         train_outputs_norm = (train_outputs - target_mean) / target_std
         logger.info(f"Fold {fold} target stats: mean={target_mean:.2f}, std={target_std:.2f}")
 
-        train_ds = MatbenchDataset(list(train_inputs), targets=train_outputs_norm)
+        full_ds  = MatbenchDataset(list(train_inputs), targets=train_outputs_norm)
         test_ds  = MatbenchDataset(list(test_inputs))
 
+        # 90 / 10 split for early stopping
+        val_size   = max(1, int(0.1 * len(full_ds)))
+        train_size = len(full_ds) - val_size
+        train_ds, val_ds = random_split(
+            full_ds, [train_size, val_size],
+            generator=torch.Generator().manual_seed(42)
+        )
+
         train_loader = _make_loader(train_ds, batch_size, shuffle=True,  num_workers=num_workers)
+        val_loader   = _make_loader(val_ds,   test_batch, shuffle=False, num_workers=num_workers)
         test_loader  = _make_loader(test_ds,  test_batch, shuffle=False, num_workers=num_workers)
 
         model = _build_model(builder, logger)
-        logger.info(f"Training fold {fold} for {max_epoch} epochs …")
-        model.matbench_trainer(train_loader, max_epoch, checkpoint_savedir=fold_dir)
+        logger.info(f"Training fold {fold} for up to {max_epoch} epochs (early stopping patience=30) …")
+        model.matbench_trainer(train_loader, max_epoch, checkpoint_savedir=fold_dir,
+                               val_loader=val_loader, patience=30)
 
         preds = model.matbench_predict(test_loader)   # np.ndarray [N], normalised scale
         preds = preds * target_std + target_mean       # de-normalise back to cm^-1
