@@ -305,6 +305,7 @@ class basemodel(nn.Module):
 
             self.optimizer[key].zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.model[key].parameters(), max_norm=1.0)
             self.optimizer[key].step()
 
             metric_logger.update(loss=loss.item())
@@ -321,58 +322,11 @@ class basemodel(nn.Module):
                     f"  {metric_logger}"
                 )
 
-    def matbench_trainer(self, train_loader, max_epoches, checkpoint_savedir=None,
-                         val_loader=None, patience=30):
-        """
-        Full training loop for one MatBench fold.
-
-        If val_loader is provided, saves the best checkpoint (lowest val MAE)
-        and stops early after `patience` epochs without improvement.
-        The best model weights are restored before returning.
-        """
-        key = list(self.model.keys())[0]
-        best_val_mae = float('inf')
-        best_state   = None
-        no_improve   = 0
-
+    def matbench_trainer(self, train_loader, max_epoches, checkpoint_savedir=None):
+        """Full training loop for one MatBench fold."""
         for epoch in range(max_epoches):
             self.matbench_train_one_epoch(train_loader, epoch, max_epoches)
-
-            if val_loader is not None:
-                self.model[key].eval()
-                mae_sum, n = 0.0, 0
-                with torch.no_grad():
-                    for batch in val_loader:
-                        elements, positions, target = batch[0], batch[1], batch[2]
-                        pred = self._forward(elements, positions).squeeze(-1)
-                        mae_sum += torch.sum(torch.abs(pred - target.to(self.device))).item()
-                        n += target.shape[0]
-                val_mae = mae_sum / n
-
-                if val_mae < best_val_mae:
-                    best_val_mae = val_mae
-                    best_state   = {k: v.cpu().clone() for k, v in self.model[key].state_dict().items()}
-                    no_improve   = 0
-                    if checkpoint_savedir is not None:
-                        self.save_checkpoint(epoch, checkpoint_savedir, save_type='save_best')
-                else:
-                    no_improve += 1
-
-                if (epoch + 1) % 20 == 0:
-                    self.logger.info(
-                        f"[MatBench] Epoch {epoch+1}/{max_epoches}  val_MAE={val_mae:.4f}"
-                        f"  best={best_val_mae:.4f}  no_improve={no_improve}"
-                    )
-
-                if no_improve >= patience:
-                    self.logger.info(f"[MatBench] Early stopping at epoch {epoch+1} (patience={patience})")
-                    break
-
-        # Restore best weights
-        if best_state is not None:
-            self.model[key].load_state_dict(best_state)
-            self.logger.info(f"[MatBench] Restored best model (val_MAE={best_val_mae:.4f})")
-        elif checkpoint_savedir is not None:
+        if checkpoint_savedir is not None:
             self.save_checkpoint(max_epoches - 1, checkpoint_savedir, save_type='save_latest')
 
     @torch.no_grad()

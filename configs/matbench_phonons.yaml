@@ -40,7 +40,7 @@ model:
     lr_scheduler:
       transformer:
         sched: cosine
-        epochs: &maxepoch 200
+        epochs: &maxepoch 100
         min_lr: 1.0e-6
         warmup_lr: 1.0e-5
         warmup_epochs: 10
